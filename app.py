@@ -45,7 +45,7 @@ def load_models():
         allowed_modules=["detection", "recognition"],
         providers=PROVIDERS,
     )
-    analyser.prepare(ctx_id=-1, det_size=(640, 640))
+    analyser.prepare(ctx_id=-1, det_thresh=0.4, det_size=(640, 640))
     swapper = insightface.model_zoo.get_model(
         str(swapper_path),
         download=False,
@@ -56,10 +56,26 @@ def load_models():
 
 def _first_face(image_bgr: np.ndarray, role: str):
     analyser, _ = load_models()
-    faces = analyser.get(image_bgr)
-    if not faces:
-        raise gr.Error(f"Không tìm thấy khuôn mặt trong {role}.")
-    return faces[0]
+    # Phone photos can arrive with missing/incorrect orientation metadata.
+    # Try every right-angle orientation and use the largest detected face.
+    for turns in range(4):
+        candidate = np.ascontiguousarray(np.rot90(image_bgr, turns))
+        faces = analyser.get(candidate)
+        if faces:
+            return max(
+                faces,
+                key=lambda face: float((face.bbox[2] - face.bbox[0]) * (face.bbox[3] - face.bbox[1])),
+            )
+    raise gr.Error(f"Không tìm thấy khuôn mặt rõ trong {role}. Hãy dùng ảnh chính diện, đủ sáng.")
+
+
+def _target_faces_with_orientation(analyser, image_bgr: np.ndarray):
+    for turns in range(4):
+        candidate = np.ascontiguousarray(np.rot90(image_bgr, turns))
+        faces = analyser.get(candidate)
+        if faces:
+            return candidate, faces, turns
+    raise gr.Error("Không tìm thấy khuôn mặt rõ trong ảnh đích. Hãy dùng ảnh đủ sáng.")
 
 
 def _sharpen(image_bgr: np.ndarray) -> np.ndarray:
@@ -78,16 +94,16 @@ def swap_face_image(target_rgb, source_rgb, enhance=True):
     with MODEL_LOCK:
         analyser, swapper = load_models()
         source_face = _first_face(source_bgr, "ảnh nguồn")
-        target_faces = analyser.get(target_bgr)
-        if not target_faces:
-            raise gr.Error("Không tìm thấy khuôn mặt trong ảnh đích.")
+        oriented_target, target_faces, turns = _target_faces_with_orientation(analyser, target_bgr)
 
-        result = target_bgr.copy()
+        result = oriented_target.copy()
         for target_face in target_faces:
             result = swapper.get(result, target_face, source_face, paste_back=True)
 
         if enhance:
             result = _sharpen(result)
+        if turns:
+            result = np.ascontiguousarray(np.rot90(result, -turns))
 
     return cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
 

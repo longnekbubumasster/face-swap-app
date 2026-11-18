@@ -1,4 +1,3 @@
-import hashlib
 import os
 import urllib.request
 from pathlib import Path
@@ -12,19 +11,13 @@ SWAPPER_URL = os.getenv(
     "INSWAPPER_MODEL_URL",
     "https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx",
 )
-SWAPPER_SHA256 = "0fa95f167682b4f61edf24f8d66c46b4ab130e8be058f00c8150e6d0170ca72f"
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+SWAPPER_MIN_BYTES = 100_000_000
 
 
 def _valid_swapper(path: Path) -> bool:
-    return path.is_file() and path.stat().st_size > 100_000_000 and _sha256(path) == SWAPPER_SHA256
+    # Mirrors can update metadata and therefore change the file checksum.
+    # Reject HTML/error responses while allowing compatible ONNX revisions.
+    return path.is_file() and path.stat().st_size > SWAPPER_MIN_BYTES
 
 
 def ensure_swapper_model() -> Path:
@@ -32,7 +25,7 @@ def ensure_swapper_model() -> Path:
     if custom_path:
         path = Path(custom_path).expanduser().resolve()
         if not _valid_swapper(path):
-            raise RuntimeError(f"Model INSWAPPER_MODEL_PATH không hợp lệ: {path}")
+            raise RuntimeError(f"Model INSWAPPER_MODEL_PATH không hợp lệ hoặc chưa tải đủ: {path}")
         return path
 
     # Reuse the user's existing local model without copying another 555 MB file.
@@ -57,7 +50,7 @@ def ensure_swapper_model() -> Path:
                     break
                 output.write(chunk)
         if not _valid_swapper(temporary):
-            raise RuntimeError("Model tải về không đúng kích thước hoặc checksum.")
+            raise RuntimeError("Model tải về chưa đầy đủ. Vui lòng deploy lại để Render tải lại model.")
         temporary.replace(destination)
     except Exception:
         temporary.unlink(missing_ok=True)
