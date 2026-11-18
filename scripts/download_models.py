@@ -2,18 +2,16 @@
 
 from insightface.app import FaceAnalysis
 
-from model_assets import FACE_MODEL, MODEL_DIR, ensure_swapper_model
+from model_assets import FACE_MODEL, MODEL_DIR
 
 
 def main() -> None:
-    swapper_path = ensure_swapper_model()
-    print(f"Swapper model ready: {swapper_path}")
-
-    # Constructing FaceAnalysis downloads and validates the selected model pack.
+    # The local pixel-transplant mode needs only face detection. It deliberately
+    # does not download the 555 MB generative swapper model.
     FaceAnalysis(
         name=FACE_MODEL,
         root=str(MODEL_DIR),
-        allowed_modules=["detection", "recognition"],
+        allowed_modules=["detection"],
         providers=["CPUExecutionProvider"],
     )
     print(f"InsightFace model ready: {FACE_MODEL}")

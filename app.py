@@ -10,11 +10,10 @@ from pathlib import Path
 
 import cv2
 import gradio as gr
-import insightface
 import numpy as np
 from insightface.app import FaceAnalysis
 
-from model_assets import FACE_MODEL, MODEL_DIR, ensure_swapper_model
+from model_assets import FACE_MODEL, MODEL_DIR
 
 
 PROVIDERS = ["CPUExecutionProvider"]
@@ -24,6 +23,7 @@ IMAGE_MAX_DIM = max(1024, int(os.getenv("IMAGE_MAX_DIM", "2560")))
 SOURCE_MAX_DIM = max(640, int(os.getenv("SOURCE_MAX_DIM", "1600")))
 VIDEO_MAX_DIM = max(640, int(os.getenv("VIDEO_MAX_DIM", "1280")))
 PRELOAD_MODELS = os.getenv("PRELOAD_MODELS", "true").lower() in {"1", "true", "yes", "on"}
+OPEN_BROWSER = os.getenv("OPEN_BROWSER", "true").lower() in {"1", "true", "yes", "on"}
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "face-swap-app"
 MODEL_LOCK = threading.Lock()
 
@@ -42,21 +42,15 @@ def _cleanup_old_outputs(max_age_seconds: int = 6 * 60 * 60) -> None:
 
 @lru_cache(maxsize=1)
 def load_models():
-    """Load the CPU models once, on the first processing request."""
-    swapper_path = ensure_swapper_model()
+    """Load only the lightweight face detector used by pixel transplantation."""
     analyser = FaceAnalysis(
         name=FACE_MODEL,
         root=str(MODEL_DIR),
-        allowed_modules=["detection", "recognition"],
+        allowed_modules=["detection"],
         providers=PROVIDERS,
     )
     analyser.prepare(ctx_id=-1, det_thresh=0.4, det_size=(640, 640))
-    swapper = insightface.model_zoo.get_model(
-        str(swapper_path),
-        download=False,
-        providers=PROVIDERS,
-    )
-    return analyser, swapper
+    return analyser
 
 
 def _resize_long_side(image: np.ndarray, max_dim: int, min_dim: int = 0) -> np.ndarray:
@@ -111,7 +105,7 @@ def _face_quality(image_bgr: np.ndarray, face) -> float:
 
 
 def _best_source_face(image_bgr: np.ndarray, role: str):
-    analyser, _ = load_models()
+    analyser = load_models()
     search_image = _resize_long_side(image_bgr, SOURCE_MAX_DIM, min_dim=640)
     best = None
     for turns in range(4):
@@ -130,8 +124,8 @@ def _best_source_face(image_bgr: np.ndarray, role: str):
     refined_faces = analyser.get(refined_image)
     if refined_faces:
         refined_face = max(refined_faces, key=lambda face: _face_quality(refined_image, face))
-        return refined_face, crop
-    return original_face, crop
+        return refined_face, crop, refined_image
+    return original_face, crop, oriented_image
 
 
 def _target_faces_with_orientation(analyser, image_bgr: np.ndarray):
@@ -141,6 +135,88 @@ def _target_faces_with_orientation(analyser, image_bgr: np.ndarray):
         if faces:
             return candidate, faces, turns
     raise gr.Error("Không tìm thấy khuôn mặt rõ trong ảnh đích. Hãy dùng ảnh đủ sáng.")
+
+
+def _match_face_colors(source_bgr: np.ndarray, target_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Gently match skin tone while keeping the source face's real texture."""
+    selected = mask > 32
+    if int(selected.sum()) < 100:
+        return source_bgr
+    source = source_bgr.astype(np.float32)
+    target = target_bgr.astype(np.float32)
+    corrected = source.copy()
+    for channel in range(3):
+        source_values = source[:, :, channel][selected]
+        target_values = target[:, :, channel][selected]
+        source_std = max(float(source_values.std()), 1.0)
+        target_std = max(float(target_values.std()), 1.0)
+        scale = float(np.clip(target_std / source_std, 0.75, 1.25))
+        matched = (source[:, :, channel] - float(source_values.mean())) * scale + float(target_values.mean())
+        corrected[:, :, channel] = source[:, :, channel] * 0.7 + matched * 0.3
+    return np.clip(corrected, 0, 255).astype(np.uint8)
+
+
+def _transplant_real_face(target_bgr: np.ndarray, target_face, source_bgr: np.ndarray, source_face) -> np.ndarray:
+    """Replace the target face with actual source pixels instead of generating a new face."""
+    source_points = np.asarray(source_face.kps, dtype=np.float32)
+    target_points = np.asarray(target_face.kps, dtype=np.float32)
+    transform, _ = cv2.estimateAffinePartial2D(source_points, target_points, method=cv2.LMEDS)
+    if transform is None:
+        raise gr.Error("Không thể căn chỉnh hai khuôn mặt. Hãy chọn ảnh nhìn gần chính diện hơn.")
+
+    source_mask = np.zeros(source_bgr.shape[:2], dtype=np.uint8)
+    left_eye, right_eye, nose, left_mouth, right_mouth = source_points[:5]
+    eye_center = (left_eye + right_eye) / 2
+    mouth_center = (left_mouth + right_mouth) / 2
+    eye_distance = max(8.0, float(np.linalg.norm(right_eye - left_eye)))
+    center_x = float((eye_center[0] + nose[0] + mouth_center[0]) / 3)
+    eye_y = float(eye_center[1])
+    mouth_y = float(mouth_center[1])
+    # Landmark-driven face oval: broad at temples/cheeks and narrow at the jaw.
+    # This excludes background and hair that are often inside detector boxes.
+    face_polygon = np.array(
+        [
+            [center_x, eye_y - 1.00 * eye_distance],
+            [center_x - 0.68 * eye_distance, eye_y - 0.78 * eye_distance],
+            [center_x - 1.00 * eye_distance, eye_y - 0.18 * eye_distance],
+            [center_x - 0.95 * eye_distance, eye_y + 0.55 * eye_distance],
+            [center_x - 0.62 * eye_distance, mouth_y + 0.30 * eye_distance],
+            [center_x, mouth_y + 0.76 * eye_distance],
+            [center_x + 0.62 * eye_distance, mouth_y + 0.30 * eye_distance],
+            [center_x + 0.95 * eye_distance, eye_y + 0.55 * eye_distance],
+            [center_x + 1.00 * eye_distance, eye_y - 0.18 * eye_distance],
+            [center_x + 0.68 * eye_distance, eye_y - 0.78 * eye_distance],
+        ],
+        dtype=np.int32,
+    )
+    face_polygon[:, 0] = np.clip(face_polygon[:, 0], 0, source_bgr.shape[1] - 1)
+    face_polygon[:, 1] = np.clip(face_polygon[:, 1], 0, source_bgr.shape[0] - 1)
+    cv2.fillConvexPoly(source_mask, face_polygon, 255, cv2.LINE_AA)
+
+    target_size = (target_bgr.shape[1], target_bgr.shape[0])
+    warped_source = cv2.warpAffine(
+        source_bgr,
+        transform,
+        target_size,
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+    warped_mask = cv2.warpAffine(source_mask, transform, target_size, flags=cv2.INTER_LINEAR)
+    warped_mask = np.where(warped_mask > 24, 255, 0).astype(np.uint8)
+
+    points = cv2.findNonZero(warped_mask)
+    if points is None:
+        raise gr.Error("Không tạo được vùng mặt để ghép.")
+    _, _, width, height = cv2.boundingRect(points)
+    color_matched = _match_face_colors(warped_source, target_bgr, warped_mask)
+    # A feathered alpha mask preserves the source face's actual pixels. Poisson
+    # cloning can invent bright patches on high-contrast portraits.
+    feather = max(5.0, min(width, height) * 0.10)
+    distance = cv2.distanceTransform((warped_mask > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    alpha_2d = np.clip(distance / feather, 0.0, 1.0)
+    alpha_2d = alpha_2d * alpha_2d * (3.0 - 2.0 * alpha_2d)
+    alpha = alpha_2d[:, :, None]
+    return np.clip(color_matched * alpha + target_bgr * (1 - alpha), 0, 255).astype(np.uint8)
 
 
 def _sharpen(image_bgr: np.ndarray) -> np.ndarray:
@@ -158,15 +234,15 @@ def swap_face_image(target_rgb, source_rgb, enhance=True, progress=gr.Progress()
     source_bgr = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2BGR)
 
     with MODEL_LOCK:
-        analyser, swapper = load_models()
+        analyser = load_models()
         progress(0.3, desc="Đang nhận diện khuôn mặt")
-        source_face, source_crop = _best_source_face(source_bgr, "ảnh nguồn")
+        source_face, source_crop, source_working = _best_source_face(source_bgr, "ảnh nguồn")
         oriented_target, target_faces, turns = _target_faces_with_orientation(analyser, target_bgr)
 
-        progress(0.6, desc=f"Đang ghép {len(target_faces)} khuôn mặt")
+        progress(0.6, desc=f"Đang thay toàn bộ {len(target_faces)} khuôn mặt")
         result = oriented_target.copy()
         for target_face in target_faces:
-            result = swapper.get(result, target_face, source_face, paste_back=True)
+            result = _transplant_real_face(result, target_face, source_working, source_face)
 
         if enhance:
             result = _sharpen(result)
@@ -258,8 +334,8 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
     try:
         progress(0.05, desc="Đang kiểm tra model AI")
         with MODEL_LOCK:
-            analyser, swapper = load_models()
-            source_face, source_crop = _best_source_face(source_bgr, "ảnh nguồn")
+            analyser = load_models()
+            source_face, source_crop, source_working = _best_source_face(source_bgr, "ảnh nguồn")
             while frames_read < input_frames_to_read:
                 ok, frame = capture.read()
                 if not ok:
@@ -274,7 +350,7 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
 
                 result = frame
                 for target_face in analyser.get(frame):
-                    result = swapper.get(result, target_face, source_face, paste_back=True)
+                    result = _transplant_real_face(result, target_face, source_working, source_face)
                 if enhance:
                     result = _sharpen(result)
 
@@ -311,12 +387,12 @@ CSS = """
 """
 
 
-with gr.Blocks(theme=gr.themes.Soft(primary_hue="violet"), css=CSS, title="AI Face Swap Pro") as demo:
+with gr.Blocks(title="AI Face Swap Pro") as demo:
     gr.Markdown(
         """
         <div class="hero">
           <h1>🎨 AI Face Swap Pro</h1>
-          <p>Ghép khuôn mặt cho ảnh và video ngay trên trình duyệt.</p>
+          <p>Ghép pixel khuôn mặt thật, không tạo lại khuôn mặt kiểu búp bê.</p>
         </div>
         <p class="notice">Chỉ sử dụng ảnh/video của bạn hoặc nội dung bạn được phép chỉnh sửa.</p>
         """
@@ -328,7 +404,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="violet"), css=CSS, title="AI Fa
                 image_target = gr.Image(type="numpy", label="Ảnh cần thay mặt")
                 image_source = gr.Image(type="numpy", label="Ảnh khuôn mặt nguồn")
             image_enhance = gr.Checkbox(value=True, label="Làm nét nhẹ sau khi ghép")
-            image_button = gr.Button("🚀 Ghép mặt ảnh", variant="primary")
+            image_button = gr.Button("🚀 Thay toàn bộ mặt thật", variant="primary")
             with gr.Row():
                 image_output = gr.Image(type="numpy", label="Kết quả", format="png")
                 image_source_preview = gr.Image(type="numpy", label="Khuôn mặt nguồn được tự động chọn")
@@ -344,7 +420,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="violet"), css=CSS, title="AI Fa
                 video_target = gr.Video(label="Video cần thay mặt")
                 video_source = gr.Image(type="numpy", label="Ảnh khuôn mặt nguồn")
             video_enhance = gr.Checkbox(value=True, label="Làm nét nhẹ sau khi ghép")
-            video_button = gr.Button("🚀 Ghép mặt video", variant="primary")
+            video_button = gr.Button("🚀 Thay mặt thật trong video", variant="primary")
             with gr.Row():
                 video_output = gr.Video(label="Kết quả", format="mp4")
                 video_source_preview = gr.Image(type="numpy", label="Khuôn mặt nguồn được tự động chọn")
@@ -363,6 +439,9 @@ if __name__ == "__main__":
     demo.queue(default_concurrency_limit=1, max_size=4).launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", "7860")),
+        inbrowser=OPEN_BROWSER,
         share=False,
         show_error=True,
+        theme=gr.themes.Soft(primary_hue="violet"),
+        css=CSS,
     )

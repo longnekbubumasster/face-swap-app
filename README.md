@@ -1,48 +1,51 @@
-# AI Face Swap Pro
+# AI Face Swap Pro — chạy trên Windows
 
-Ứng dụng Gradio ghép khuôn mặt vào ảnh hoặc video, được cấu hình để chạy trên Render bằng CPU.
+Ứng dụng ghép khuôn mặt cho ảnh và video bằng CPU, chạy hoàn toàn trên máy tính local. Ảnh và video không cần gửi lên Render.
 
-## Deploy lên Render
+## Cách nhanh nhất
 
-> **Lưu ý chi phí:** model AI này không phù hợp với gói Free 512 MB. File `render.yaml` dùng gói `standard` (1 CPU, 2 GB RAM). Render sẽ hiển thị chi phí trước khi bạn xác nhận tạo dịch vụ.
+Yêu cầu: Windows 10/11, Python 3.12 64-bit và khoảng 4 GB RAM trống.
 
-1. Push mã nguồn lên GitHub. Không thêm file `inswapper_128.onnx` vì file này lớn hơn giới hạn của GitHub và đã được `.gitignore` bỏ qua.
-2. Trong Render, chọn **New → Blueprint**.
-3. Kết nối repository và chọn file `render.yaml`.
-4. Xác nhận tạo dịch vụ. Bước build sẽ tự cài package và tải model; lần đầu có thể mất khá lâu.
-5. Khi trạng thái chuyển sang **Live**, mở URL `onrender.com` do Render cung cấp.
+### Lần đầu
 
-Render tự triển khai lại sau mỗi lần push lên nhánh đã kết nối.
+1. Double-click `setup_local.bat`.
+2. Chờ cài thư viện và tải model hoàn tất.
+3. Double-click `start_local.bat`.
 
-## Chạy local
+Trình duyệt sẽ tự mở địa chỉ `http://localhost:7860` sau khi model đã nạp xong.
 
-Yêu cầu Python 3.11 và ít nhất khoảng 2 GB RAM trống.
+### Những lần sau
 
-```bash
+Chỉ cần double-click `start_local.bat`.
+
+## Chạy bằng PowerShell
+
+```powershell
 python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install numpy==1.26.4 Cython==3.0.11
-python -m pip install --no-build-isolation --no-deps insightface==0.7.3
-python -m pip install -r requirements.txt
-python -m scripts.download_models
-python app.py
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -r requirements-local.txt
+$env:MODEL_DIR = "$PWD\.models"
+.\.venv\Scripts\python.exe -m scripts.download_models
+.\.venv\Scripts\python.exe app.py
 ```
 
-Mở `http://localhost:7860`. Có thể đổi giới hạn video bằng biến môi trường `MAX_VIDEO_SECONDS` (mặc định 10 giây).
+## Hoạt động
 
-## Cấu hình
+- Tự tìm khuôn mặt nguồn rõ nhất.
+- Tự xoay và crop khuôn mặt nguồn.
+- Lấy pixel thật của toàn bộ vùng mặt nguồn thay cho mặt cũ, không dùng model sinh mặt kiểu búp bê.
+- Ghép tất cả khuôn mặt phát hiện được trong ảnh đích.
+- Ảnh nhỏ được phóng lên để nhận diện; ảnh rất lớn được giảm về kích thước an toàn.
+- Video được giảm FPS và độ phân giải khi cần để xử lý nhanh hơn trên CPU.
+- Model được lưu tại `.models` và chỉ tải một lần.
 
-- `PORT`: cổng web; Render tự cung cấp biến này.
-- `MODEL_DIR`: thư mục chứa model, mặc định `.models`.
-- `FACE_MODEL`: model nhận diện InsightFace, mặc định `buffalo_s` để tiết kiệm RAM.
-- `MAX_VIDEO_SECONDS`: số giây video tối đa được xử lý, mặc định `10`.
-- `VIDEO_MAX_FPS`: FPS tối đa dùng để xử lý video trên CPU, mặc định `6`.
-- `VIDEO_MAX_DIM`: cạnh dài tối đa của video khi xử lý, mặc định `1280`.
+## Cấu hình tùy chọn
+
+- `PORT`: cổng local, mặc định `7860`.
+- `MAX_VIDEO_SECONDS`: độ dài video tối đa, mặc định `10` giây.
+- `VIDEO_MAX_FPS`: FPS xử lý tối đa, mặc định `6`.
+- `VIDEO_MAX_DIM`: cạnh dài tối đa của video, mặc định `1280`.
 - `IMAGE_MAX_DIM`: cạnh dài tối đa của ảnh kết quả, mặc định `2560`.
-- `SOURCE_MAX_DIM`: cạnh dài dùng khi tìm khuôn mặt nguồn rõ nhất, mặc định `1600`.
-- `PRELOAD_MODELS`: nạp xong model trước khi mở web, tránh tác vụ đầu tiên đứng ở 0%.
-- `INSWAPPER_MODEL_PATH`: đường dẫn model `inswapper_128.onnx` tùy chỉnh.
+- `OPEN_BROWSER`: tự mở trình duyệt, mặc định `true`.
 
 Chỉ sử dụng ảnh/video của bạn hoặc nội dung bạn được phép chỉnh sửa.

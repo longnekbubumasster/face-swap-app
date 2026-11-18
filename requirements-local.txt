@@ -1,0 +1,6 @@
+numpy==1.26.4
+opencv-python==4.8.0.76
+onnx==1.23.2
+onnxruntime==1.32.0
+insightface==2.1
+gradio==6.32.0
