@@ -153,7 +153,7 @@ def swap_face_image(target_rgb, source_rgb, enhance=True, progress=gr.Progress()
     if target_rgb is None or source_rgb is None:
         raise gr.Error("Vui lòng tải đủ ảnh đích và ảnh khuôn mặt nguồn.")
 
-    progress(0, desc="Đang nạp model AI")
+    progress(0.05, desc="Đang kiểm tra model AI")
     target_bgr = _resize_long_side(cv2.cvtColor(target_rgb, cv2.COLOR_RGB2BGR), IMAGE_MAX_DIM, min_dim=512)
     source_bgr = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2BGR)
 
@@ -256,7 +256,7 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
     processed = 0
     frames_read = 0
     try:
-        progress(0, desc="Đang nạp model AI")
+        progress(0.05, desc="Đang kiểm tra model AI")
         with MODEL_LOCK:
             analyser, swapper = load_models()
             source_face, source_crop = _best_source_face(source_bgr, "ảnh nguồn")
@@ -301,6 +301,7 @@ def _preload_models() -> None:
         print("AI models preloaded and ready.", flush=True)
     except Exception as error:
         print(f"Model preload failed: {error}", flush=True)
+        raise
 
 
 CSS = """
@@ -356,7 +357,9 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="violet"), css=CSS, title="AI Fa
 
 if __name__ == "__main__":
     if PRELOAD_MODELS:
-        threading.Thread(target=_preload_models, name="model-preloader", daemon=True).start()
+        # Keep the UI offline until ONNX sessions are ready. The one-time wait
+        # belongs to Render's startup, not to the first user's queued job.
+        _preload_models()
     demo.queue(default_concurrency_limit=1, max_size=4).launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", "7860")),

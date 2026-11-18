@@ -42,7 +42,7 @@ Mở `http://localhost:7860`. Có thể đổi giới hạn video bằng biến 
 - `VIDEO_MAX_DIM`: cạnh dài tối đa của video khi xử lý, mặc định `1280`.
 - `IMAGE_MAX_DIM`: cạnh dài tối đa của ảnh kết quả, mặc định `2560`.
 - `SOURCE_MAX_DIM`: cạnh dài dùng khi tìm khuôn mặt nguồn rõ nhất, mặc định `1600`.
-- `PRELOAD_MODELS`: nạp sẵn model khi web khởi động để lượt ghép đầu tiên nhanh hơn.
+- `PRELOAD_MODELS`: nạp xong model trước khi mở web, tránh tác vụ đầu tiên đứng ở 0%.
 - `INSWAPPER_MODEL_PATH`: đường dẫn model `inswapper_128.onnx` tùy chỉnh.
 
 Chỉ sử dụng ảnh/video của bạn hoặc nội dung bạn được phép chỉnh sửa.
