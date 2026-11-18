@@ -21,6 +21,14 @@ services:
         value: "10"
       - key: VIDEO_MAX_FPS
         value: "6"
+      - key: VIDEO_MAX_DIM
+        value: "1280"
+      - key: IMAGE_MAX_DIM
+        value: "2560"
+      - key: SOURCE_MAX_DIM
+        value: "1600"
+      - key: PRELOAD_MODELS
+        value: "true"
       - key: GRADIO_ANALYTICS_ENABLED
         value: "False"
       - key: OMP_NUM_THREADS

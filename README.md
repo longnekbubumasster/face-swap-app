@@ -39,6 +39,10 @@ Mở `http://localhost:7860`. Có thể đổi giới hạn video bằng biến 
 - `FACE_MODEL`: model nhận diện InsightFace, mặc định `buffalo_s` để tiết kiệm RAM.
 - `MAX_VIDEO_SECONDS`: số giây video tối đa được xử lý, mặc định `10`.
 - `VIDEO_MAX_FPS`: FPS tối đa dùng để xử lý video trên CPU, mặc định `6`.
+- `VIDEO_MAX_DIM`: cạnh dài tối đa của video khi xử lý, mặc định `1280`.
+- `IMAGE_MAX_DIM`: cạnh dài tối đa của ảnh kết quả, mặc định `2560`.
+- `SOURCE_MAX_DIM`: cạnh dài dùng khi tìm khuôn mặt nguồn rõ nhất, mặc định `1600`.
+- `PRELOAD_MODELS`: nạp sẵn model khi web khởi động để lượt ghép đầu tiên nhanh hơn.
 - `INSWAPPER_MODEL_PATH`: đường dẫn model `inswapper_128.onnx` tùy chỉnh.
 
 Chỉ sử dụng ảnh/video của bạn hoặc nội dung bạn được phép chỉnh sửa.

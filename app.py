@@ -20,6 +20,10 @@ from model_assets import FACE_MODEL, MODEL_DIR, ensure_swapper_model
 PROVIDERS = ["CPUExecutionProvider"]
 MAX_VIDEO_SECONDS = max(1, int(os.getenv("MAX_VIDEO_SECONDS", "10")))
 VIDEO_MAX_FPS = max(1.0, float(os.getenv("VIDEO_MAX_FPS", "6")))
+IMAGE_MAX_DIM = max(1024, int(os.getenv("IMAGE_MAX_DIM", "2560")))
+SOURCE_MAX_DIM = max(640, int(os.getenv("SOURCE_MAX_DIM", "1600")))
+VIDEO_MAX_DIM = max(640, int(os.getenv("VIDEO_MAX_DIM", "1280")))
+PRELOAD_MODELS = os.getenv("PRELOAD_MODELS", "true").lower() in {"1", "true", "yes", "on"}
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "face-swap-app"
 MODEL_LOCK = threading.Lock()
 
@@ -55,19 +59,79 @@ def load_models():
     return analyser, swapper
 
 
-def _first_face(image_bgr: np.ndarray, role: str):
+def _resize_long_side(image: np.ndarray, max_dim: int, min_dim: int = 0) -> np.ndarray:
+    height, width = image.shape[:2]
+    longest = max(height, width)
+    scale = 1.0
+    if longest > max_dim:
+        scale = max_dim / longest
+    elif min_dim and longest < min_dim:
+        scale = min_dim / longest
+    if abs(scale - 1.0) < 0.001:
+        return np.ascontiguousarray(image)
+    interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+    return cv2.resize(image, None, fx=scale, fy=scale, interpolation=interpolation)
+
+
+def _face_crop(image_bgr: np.ndarray, face, margin: float = 0.45) -> np.ndarray:
+    height, width = image_bgr.shape[:2]
+    x1, y1, x2, y2 = [float(value) for value in face.bbox]
+    center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+    side = max(x2 - x1, y2 - y1) * (1 + margin * 2)
+    left = max(0, int(center_x - side / 2))
+    top = max(0, int(center_y - side / 2))
+    right = min(width, int(center_x + side / 2))
+    bottom = min(height, int(center_y + side / 2))
+    return np.ascontiguousarray(image_bgr[top:bottom, left:right])
+
+
+def _face_quality(image_bgr: np.ndarray, face) -> float:
+    crop = _face_crop(image_bgr, face, margin=0.05)
+    if crop.size == 0:
+        return -1.0
+    gray = cv2.cvtColor(_resize_long_side(crop, 320), cv2.COLOR_BGR2GRAY)
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    x1, y1, x2, y2 = [float(value) for value in face.bbox]
+    face_side = max(x2 - x1, y2 - y1)
+    size_score = min(1.0, face_side / 280.0)
+    sharpness_score = min(1.0, sharpness / 220.0)
+    confidence = float(getattr(face, "det_score", 0.5) or 0.5)
+    orientation_score = 0.5
+    keypoints = getattr(face, "kps", None)
+    if keypoints is not None and len(keypoints) >= 5:
+        left_eye, right_eye, nose, left_mouth, right_mouth = keypoints[:5]
+        eye_angle = abs(float(np.degrees(np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0]))))
+        eye_angle = min(eye_angle, abs(180 - eye_angle))
+        level_score = max(0.0, 1.0 - eye_angle / 45.0)
+        eye_y = float((left_eye[1] + right_eye[1]) / 2)
+        mouth_y = float((left_mouth[1] + right_mouth[1]) / 2)
+        upright_score = 1.0 if mouth_y > nose[1] > eye_y else 0.0
+        orientation_score = (level_score + upright_score) / 2
+    return size_score * 0.35 + sharpness_score * 0.25 + confidence * 0.15 + orientation_score * 0.25
+
+
+def _best_source_face(image_bgr: np.ndarray, role: str):
     analyser, _ = load_models()
-    # Phone photos can arrive with missing/incorrect orientation metadata.
-    # Try every right-angle orientation and use the largest detected face.
+    search_image = _resize_long_side(image_bgr, SOURCE_MAX_DIM, min_dim=640)
+    best = None
     for turns in range(4):
-        candidate = np.ascontiguousarray(np.rot90(image_bgr, turns))
+        candidate = np.ascontiguousarray(np.rot90(search_image, turns))
         faces = analyser.get(candidate)
-        if faces:
-            return max(
-                faces,
-                key=lambda face: float((face.bbox[2] - face.bbox[0]) * (face.bbox[3] - face.bbox[1])),
-            )
-    raise gr.Error(f"Không tìm thấy khuôn mặt rõ trong {role}. Hãy dùng ảnh chính diện, đủ sáng.")
+        for face in faces:
+            score = _face_quality(candidate, face)
+            if best is None or score > best[0]:
+                best = (score, candidate, face)
+    if best is None:
+        raise gr.Error(f"Không tìm thấy khuôn mặt rõ trong {role}. Hãy dùng ảnh chính diện, đủ sáng.")
+
+    _, oriented_image, original_face = best
+    crop = _face_crop(oriented_image, original_face)
+    refined_image = _resize_long_side(crop, 960, min_dim=640)
+    refined_faces = analyser.get(refined_image)
+    if refined_faces:
+        refined_face = max(refined_faces, key=lambda face: _face_quality(refined_image, face))
+        return refined_face, crop
+    return original_face, crop
 
 
 def _target_faces_with_orientation(analyser, image_bgr: np.ndarray):
@@ -90,13 +154,13 @@ def swap_face_image(target_rgb, source_rgb, enhance=True, progress=gr.Progress()
         raise gr.Error("Vui lòng tải đủ ảnh đích và ảnh khuôn mặt nguồn.")
 
     progress(0, desc="Đang nạp model AI")
-    target_bgr = cv2.cvtColor(target_rgb, cv2.COLOR_RGB2BGR)
+    target_bgr = _resize_long_side(cv2.cvtColor(target_rgb, cv2.COLOR_RGB2BGR), IMAGE_MAX_DIM, min_dim=512)
     source_bgr = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2BGR)
 
     with MODEL_LOCK:
         analyser, swapper = load_models()
         progress(0.3, desc="Đang nhận diện khuôn mặt")
-        source_face = _first_face(source_bgr, "ảnh nguồn")
+        source_face, source_crop = _best_source_face(source_bgr, "ảnh nguồn")
         oriented_target, target_faces, turns = _target_faces_with_orientation(analyser, target_bgr)
 
         progress(0.6, desc=f"Đang ghép {len(target_faces)} khuôn mặt")
@@ -110,7 +174,7 @@ def swap_face_image(target_rgb, source_rgb, enhance=True, progress=gr.Progress()
             result = np.ascontiguousarray(np.rot90(result, -turns))
 
     progress(1, desc="Hoàn tất")
-    return cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+    return cv2.cvtColor(result, cv2.COLOR_BGR2RGB), cv2.cvtColor(source_crop, cv2.COLOR_BGR2RGB)
 
 
 def _browser_compatible_video(input_path: Path) -> Path:
@@ -166,6 +230,10 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
         capture.release()
         raise gr.Error("Video không có kích thước hợp lệ.")
 
+    video_scale = min(1.0, VIDEO_MAX_DIM / max(width, height))
+    output_width = max(2, int(round(width * video_scale / 2) * 2))
+    output_height = max(2, int(round(height * video_scale / 2) * 2))
+
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     max_input_frames = max(1, int(fps * MAX_VIDEO_SECONDS))
     input_frames_to_read = min(total_frames, max_input_frames) if total_frames > 0 else max_input_frames
@@ -179,7 +247,7 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
         str(raw_output),
         cv2.VideoWriter_fourcc(*"mp4v"),
         output_fps,
-        (width, height),
+        (output_width, output_height),
     )
     if not writer.isOpened():
         capture.release()
@@ -191,7 +259,7 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
         progress(0, desc="Đang nạp model AI")
         with MODEL_LOCK:
             analyser, swapper = load_models()
-            source_face = _first_face(source_bgr, "ảnh nguồn")
+            source_face, source_crop = _best_source_face(source_bgr, "ảnh nguồn")
             while frames_read < input_frames_to_read:
                 ok, frame = capture.read()
                 if not ok:
@@ -200,6 +268,9 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
                 frames_read += 1
                 if current_frame % frame_step != 0:
                     continue
+
+                if (frame.shape[1], frame.shape[0]) != (output_width, output_height):
+                    frame = cv2.resize(frame, (output_width, output_height), interpolation=cv2.INTER_AREA)
 
                 result = frame
                 for target_face in analyser.get(frame):
@@ -220,7 +291,16 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
         raise gr.Error("Video không có khung hình hợp lệ.")
 
     progress(1, desc="Đang chuẩn bị video để phát trên web")
-    return str(_browser_compatible_video(raw_output))
+    return str(_browser_compatible_video(raw_output)), cv2.cvtColor(source_crop, cv2.COLOR_BGR2RGB)
+
+
+def _preload_models() -> None:
+    try:
+        with MODEL_LOCK:
+            load_models()
+        print("AI models preloaded and ready.", flush=True)
+    except Exception as error:
+        print(f"Model preload failed: {error}", flush=True)
 
 
 CSS = """
@@ -248,11 +328,13 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="violet"), css=CSS, title="AI Fa
                 image_source = gr.Image(type="numpy", label="Ảnh khuôn mặt nguồn")
             image_enhance = gr.Checkbox(value=True, label="Làm nét nhẹ sau khi ghép")
             image_button = gr.Button("🚀 Ghép mặt ảnh", variant="primary")
-            image_output = gr.Image(type="numpy", label="Kết quả", format="png")
+            with gr.Row():
+                image_output = gr.Image(type="numpy", label="Kết quả", format="png")
+                image_source_preview = gr.Image(type="numpy", label="Khuôn mặt nguồn được tự động chọn")
             image_button.click(
                 swap_face_image,
                 inputs=[image_target, image_source, image_enhance],
-                outputs=image_output,
+                outputs=[image_output, image_source_preview],
             )
 
         with gr.TabItem("🎥 Ghép mặt video"):
@@ -262,15 +344,19 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="violet"), css=CSS, title="AI Fa
                 video_source = gr.Image(type="numpy", label="Ảnh khuôn mặt nguồn")
             video_enhance = gr.Checkbox(value=True, label="Làm nét nhẹ sau khi ghép")
             video_button = gr.Button("🚀 Ghép mặt video", variant="primary")
-            video_output = gr.Video(label="Kết quả", format="mp4")
+            with gr.Row():
+                video_output = gr.Video(label="Kết quả", format="mp4")
+                video_source_preview = gr.Image(type="numpy", label="Khuôn mặt nguồn được tự động chọn")
             video_button.click(
                 swap_face_video,
                 inputs=[video_target, video_source, video_enhance],
-                outputs=video_output,
+                outputs=[video_output, video_source_preview],
             )
 
 
 if __name__ == "__main__":
+    if PRELOAD_MODELS:
+        threading.Thread(target=_preload_models, name="model-preloader", daemon=True).start()
     demo.queue(default_concurrency_limit=1, max_size=4).launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", "7860")),
