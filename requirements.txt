@@ -1,6 +1,9 @@
 wheel
 numpy==1.26.4
 opencv-python-headless==4.8.1.78
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.2+cpu
+torchvision==0.16.2+cpu
 onnx==1.15.0
 onnxruntime==1.17.1
 insightface==0.7.3
