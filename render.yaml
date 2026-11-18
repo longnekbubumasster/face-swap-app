@@ -19,6 +19,8 @@ services:
         value: buffalo_s
       - key: MAX_VIDEO_SECONDS
         value: "10"
+      - key: VIDEO_MAX_FPS
+        value: "6"
       - key: GRADIO_ANALYTICS_ENABLED
         value: "False"
       - key: OMP_NUM_THREADS

@@ -19,6 +19,7 @@ from model_assets import FACE_MODEL, MODEL_DIR, ensure_swapper_model
 
 PROVIDERS = ["CPUExecutionProvider"]
 MAX_VIDEO_SECONDS = max(1, int(os.getenv("MAX_VIDEO_SECONDS", "10")))
+VIDEO_MAX_FPS = max(1.0, float(os.getenv("VIDEO_MAX_FPS", "6")))
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "face-swap-app"
 MODEL_LOCK = threading.Lock()
 
@@ -84,18 +85,21 @@ def _sharpen(image_bgr: np.ndarray) -> np.ndarray:
     return cv2.addWeighted(image_bgr, 1.35, blurred, -0.35, 0)
 
 
-def swap_face_image(target_rgb, source_rgb, enhance=True):
+def swap_face_image(target_rgb, source_rgb, enhance=True, progress=gr.Progress()):
     if target_rgb is None or source_rgb is None:
         raise gr.Error("Vui lòng tải đủ ảnh đích và ảnh khuôn mặt nguồn.")
 
+    progress(0, desc="Đang nạp model AI")
     target_bgr = cv2.cvtColor(target_rgb, cv2.COLOR_RGB2BGR)
     source_bgr = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2BGR)
 
     with MODEL_LOCK:
         analyser, swapper = load_models()
+        progress(0.3, desc="Đang nhận diện khuôn mặt")
         source_face = _first_face(source_bgr, "ảnh nguồn")
         oriented_target, target_faces, turns = _target_faces_with_orientation(analyser, target_bgr)
 
+        progress(0.6, desc=f"Đang ghép {len(target_faces)} khuôn mặt")
         result = oriented_target.copy()
         for target_face in target_faces:
             result = swapper.get(result, target_face, source_face, paste_back=True)
@@ -105,6 +109,7 @@ def swap_face_image(target_rgb, source_rgb, enhance=True):
         if turns:
             result = np.ascontiguousarray(np.rot90(result, -turns))
 
+    progress(1, desc="Hoàn tất")
     return cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
 
 
@@ -162,13 +167,18 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
         raise gr.Error("Video không có kích thước hợp lệ.")
 
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    max_frames = max(1, int(fps * MAX_VIDEO_SECONDS))
-    frames_to_process = min(total_frames, max_frames) if total_frames > 0 else max_frames
+    max_input_frames = max(1, int(fps * MAX_VIDEO_SECONDS))
+    input_frames_to_read = min(total_frames, max_input_frames) if total_frames > 0 else max_input_frames
+    # Face detection is the expensive part. Sampling to a web-friendly FPS keeps
+    # the original duration while making CPU-only Render instances respond sooner.
+    frame_step = max(1, int(round(fps / VIDEO_MAX_FPS)))
+    output_fps = fps / frame_step
+    frames_to_process = max(1, (input_frames_to_read + frame_step - 1) // frame_step)
     raw_output = OUTPUT_DIR / f"face-swap-{uuid.uuid4().hex}.mp4"
     writer = cv2.VideoWriter(
         str(raw_output),
         cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
+        output_fps,
         (width, height),
     )
     if not writer.isOpened():
@@ -176,14 +186,20 @@ def swap_face_video(target_video_path, source_rgb, enhance=True, progress=gr.Pro
         raise gr.Error("Không thể tạo video kết quả.")
 
     processed = 0
+    frames_read = 0
     try:
+        progress(0, desc="Đang nạp model AI")
         with MODEL_LOCK:
             analyser, swapper = load_models()
             source_face = _first_face(source_bgr, "ảnh nguồn")
-            while processed < frames_to_process:
+            while frames_read < input_frames_to_read:
                 ok, frame = capture.read()
                 if not ok:
                     break
+                current_frame = frames_read
+                frames_read += 1
+                if current_frame % frame_step != 0:
+                    continue
 
                 result = frame
                 for target_face in analyser.get(frame):

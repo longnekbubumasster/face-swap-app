@@ -38,6 +38,7 @@ Mở `http://localhost:7860`. Có thể đổi giới hạn video bằng biến 
 - `MODEL_DIR`: thư mục chứa model, mặc định `.models`.
 - `FACE_MODEL`: model nhận diện InsightFace, mặc định `buffalo_s` để tiết kiệm RAM.
 - `MAX_VIDEO_SECONDS`: số giây video tối đa được xử lý, mặc định `10`.
+- `VIDEO_MAX_FPS`: FPS tối đa dùng để xử lý video trên CPU, mặc định `6`.
 - `INSWAPPER_MODEL_PATH`: đường dẫn model `inswapper_128.onnx` tùy chỉnh.
 
 Chỉ sử dụng ảnh/video của bạn hoặc nội dung bạn được phép chỉnh sửa.
