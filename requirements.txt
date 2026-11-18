@@ -1,10 +1,33 @@
-wheel
+# Core numerical and inference stack
+Cython==3.0.11
 numpy==1.26.4
-opencv-python-headless==4.9.0.80
 onnx==1.16.1
-onnxruntime==1.17.1
+onnxruntime==1.18.1
+opencv-python-headless==4.10.0.84
+protobuf==5.28.3
+
+# InsightFace 0.7.3 is installed without dependencies in render.yaml so that
+# pip does not also install the non-headless OpenCV wheel.
 insightface==0.7.3
-streamlit==1.38.0
-gfpgan==1.3.8
+albumentations==1.4.3
+easydict==1.13
+matplotlib==3.8.4
+Pillow==10.4.0
+prettytable==3.10.0
+requests==2.32.3
 scikit-image==0.22.0
+scikit-learn==1.4.2
 scipy==1.12.0
+tqdm==4.66.5
+
+# Gradio and compatible web-stack versions
+gradio==4.44.1
+fastapi==0.115.0
+httpx==0.27.2
+huggingface-hub==0.25.2
+pandas==2.2.3
+pydantic==2.9.2
+python-dateutil==2.9.0.post0
+starlette==0.38.6
+typer==0.12.5
+uvicorn==0.30.6

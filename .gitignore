@@ -1,6 +1,22 @@
-venv/
+# Python
 __pycache__/
-output*.mp4
-output*.jpg
+*.py[cod]
+.venv*/
+venv/
+
+# Downloaded AI models (too large for GitHub)
+.models/
 .insightface/
 inswapper_128.onnx
+*.onnx.part
+
+# Runtime output and uploaded files
+output*.mp4
+output*.jpg
+temp_*
+gradio_cached_examples/
+
+# Local tooling
+.env
+.vscode/
+.idea/

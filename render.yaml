@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: ai-face-swap-pro
+    runtime: python
+    plan: standard
+    autoDeployTrigger: commit
+    buildCommand: >-
+      python -m pip install --upgrade pip setuptools wheel &&
+      python -m pip install numpy==1.26.4 Cython==3.0.11 &&
+      python -m pip install --no-build-isolation --no-deps insightface==0.7.3 &&
+      python -m pip install -r requirements.txt &&
+      python -m scripts.download_models
+    startCommand: python app.py
+    healthCheckPath: /
+    envVars:
+      - key: MODEL_DIR
+        value: .models
+      - key: FACE_MODEL
+        value: buffalo_s
+      - key: MAX_VIDEO_SECONDS
+        value: "10"
+      - key: GRADIO_ANALYTICS_ENABLED
+        value: "False"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
