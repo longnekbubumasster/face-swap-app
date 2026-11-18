@@ -162,4 +162,5 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
             img_btn.click(fn=process_face_swap_image, inputs=[img_target, img_source], outputs=[img_output, img_status])
 
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", server_port=7860)
+    port = int(os.environ.get("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port)
