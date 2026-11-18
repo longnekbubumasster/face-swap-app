@@ -8,11 +8,11 @@ import gradio as gr
 
 # Khởi tạo mô hình AI
 print("Đang tải mô hình AI và bộ lọc làm nét...")
-app_face = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider']) # Đổi thành 'CUDAExecutionProvider' nếu có GPU NVIDIA
+app_face = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
 app_face.prepare(ctx_id=0, det_size=(640, 640))
 swapper = insightface.model_zoo.get_model('inswapper_128.onnx', download=True)
 
-# Khởi tạo mô hình làm nét khuôn mặt GFPGAN (giúp mặt giống thật, sắc sảo hơn)
+# Khởi tạo mô hình làm nét GFPGAN (giúp mặt giống thật, sắc sảo hơn)
 restorer = GFPGANer(
     model_path='https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth',
     upscale=1,
@@ -21,26 +21,7 @@ restorer = GFPGANer(
     bg_upsampler=None
 )
 
-# Hàm phụ trợ: Cân bằng màu sắc vùng da mặt để khớp với khung hình gốc
-def color_transfer(source_img, target_img, mask):
-    # Chuyển sang không gian màu LAB để cân chỉnh độ sáng và sắc độ da
-    source_lab = cv2.cvtColor(source_img, cv2.COLOR_BGR2LAB)
-    target_lab = cv2.cvtColor(target_img, cv2.COLOR_BGR2LAB)
-    
-    # Khớp màu trung bình trong vùng mặt
-    for i in range(3):
-        source_lab[:, :, i] = np.where(
-            mask > 0,
-            np.clip(
-                (source_lab[:, :, i].astype(np.float32) - np.mean(source_lab[:, :, i][mask > 0])) * 
-                (np.std(target_lab[:, :, i][mask > 0]) / (np.std(source_lab[:, :, i][mask > 0]) + 1e-6)) + 
-                np.mean(target_lab[:, :, i][mask > 0]), 0, 255
-            ).astype(np.uint8),
-            source_lab[:, :, i]
-        )
-    return cv2.cvtColor(source_lab, cv2.COLOR_LAB2BGR)
-
-# 1. Xử lý ghép mặt vào Video (Có làm nét & Khớp màu)
+# 1. Xử lý ghép mặt vào Video
 def process_face_swap_video(video_file, image_file):
     if video_file is None or image_file is None:
         return None, "Vui lòng chọn đầy đủ video và ảnh chân dung!"
@@ -60,7 +41,7 @@ def process_face_swap_video(video_file, image_file):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    max_frames = int(fps * 10) # Giới hạn 10 giây
+    max_frames = int(fps * 10) # Giới hạn 10 giây để chạy mượt
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     target_frames = min(total_frames, max_frames)
 
@@ -77,10 +58,9 @@ def process_face_swap_video(video_file, image_file):
         res_frame = frame.copy()
         
         for face in target_faces:
-            # Ghép mặt cơ bản
             res_frame = swapper.get(res_frame, face, source_face, paste_back=True)
 
-        # Sử dụng GFPGAN để làm nét chi tiết khuôn mặt, khử mờ
+        # Làm nét khuôn mặt bằng GFPGAN
         _, _, enhanced_frame = restorer.enhance(
             res_frame, 
             has_aligned=False, 
@@ -94,9 +74,9 @@ def process_face_swap_video(video_file, image_file):
     cap.release()
     out.release()
     
-    return output_path, "Đã ghép mặt vào video thành công (Đã tối ưu làm nét & màu sắc)!"
+    return output_path, "Xử lý thành công! Nhấn tải xuống bên dưới để lưu vào iPhone."
 
-# 2. Xử lý ghép mặt vào Ảnh (Có làm nét & Khớp màu)
+# 2. Xử lý ghép mặt vào Ảnh
 def process_face_swap_image(target_image_file, source_image_file):
     if target_image_file is None or source_image_file is None:
         return None, "Vui lòng chọn đầy đủ ảnh đích và ảnh nguồn!"
@@ -120,7 +100,7 @@ def process_face_swap_image(target_image_file, source_image_file):
     for face in target_faces:
         res_img = swapper.get(res_img, face, source_face, paste_back=True)
 
-    # Sử dụng GFPGAN làm nét để khuôn mặt sắc sảo, giống thật nhất
+    # Làm nét siêu sắc sảo cho ảnh
     _, _, enhanced_img = restorer.enhance(
         res_img, 
         has_aligned=False, 
@@ -129,37 +109,40 @@ def process_face_swap_image(target_image_file, source_image_file):
     )
 
     cv2.imwrite(output_path, enhanced_img)
-    return output_path, "Đã ghép mặt vào ảnh thành công (Sắc nét và chân thực hơn)!"
+    return output_path, "Xử lý thành công! Nhấn vào ảnh kết quả để lưu vào Thư viện iPhone."
 
-# Giao diện Web Gradio
-with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# Ứng dụng Ghép Mặt AI Chuyên Sâu (High-Quality Face Swap)")
-    gr.Markdown("Đã tích hợp mô hình làm nét **GFPGAN** giúp khuôn mặt sắc nét, tự nhiên và khớp màu hài hòa hơn.")
+# Giao diện Web Gradio tối ưu cho iPhone 14 Pro Max
+custom_css = """
+body { background-color: #f7f7f8; }
+.gradio-container { max-width: 600px !important; margin: auto; padding: 15px; }
+.primary-btn { background: linear-gradient(135deg, #007aff, #5856d6) !important; color: white !important; font-size: 16px !important; font-weight: bold; border-radius: 12px !important; padding: 12px !important; }
+"""
+
+with gr.Blocks(css=custom_css, theme=gr.themes.Default()) as demo:
+    gr.Markdown("# 🎨 AI Face Swap Pro (iPhone Optimized)")
+    gr.Markdown("Chọn ảnh/video trực tiếp từ Thư viện iPhone, xử lý nét căng & dễ dàng lưu về máy.")
 
     with gr.Tabs():
-        with gr.TabItem("🎥 Ghép mặt vào Video"):
-            with gr.Row():
-                with gr.Column():
-                    vid_input = gr.File(label="Chọn Video (tối đa 10s)", file_types=[".mp4", ".avi", ".mov"])
-                    vid_source_img = gr.File(label="Chọn Ảnh khuôn mặt muốn ghép", file_types=[".jpg", ".png", ".jpeg"])
-                    vid_btn = gr.Button("Bắt đầu ghép mặt (Bản Nâng Cấp)", variant="primary")
-                    vid_status = gr.Textbox(label="Trạng thái", interactive=False)
-                with gr.Column():
-                    vid_output = gr.Video(label="Kết quả Video & Tải xuống")
-
-            vid_btn.click(fn=process_face_swap_video, inputs=[vid_input, vid_source_img], outputs=[vid_output, vid_status])
-
-        with gr.TabItem("🖼️ Ghép mặt vào Ảnh"):
-            with gr.Row():
-                with gr.Column():
-                    img_target = gr.File(label="Chọn Ảnh đích (Ảnh cần thay mặt)", file_types=[".jpg", ".png", ".jpeg"])
-                    img_source = gr.File(label="Chọn Ảnh khuôn mặt nguồn", file_types=[".jpg", ".png", ".jpeg"])
-                    img_btn = gr.Button("Bắt đầu ghép mặt (Bản Nâng Cấp)", variant="primary")
-                    img_status = gr.Textbox(label="Trạng thái", interactive=False)
-                with gr.Column():
-                    img_output = gr.Image(label="Kết quả Ảnh & Tải xuống", type="filepath")
+        with gr.TabItem("🖼️ Ghép mặt Ảnh"):
+            with gr.Column():
+                img_target = gr.Image(label="1. Chọn Ảnh Cần Thay Mặt", type="filepath", sources=["upload"])
+                img_source = gr.Image(label="2. Chọn Ảnh Khuôn Mặt Gốc", type="filepath", sources=["upload"])
+                img_btn = gr.Button("🚀 Tiến Hành Ghép Mặt (Siêu Nét)", elem_classes="primary-btn")
+                img_status = gr.Textbox(label="Trạng thái", interactive=False)
+                # Trả về dạng Image component giúp người dùng Safari bấm giữ hoặc chạm để lưu trực tiếp vào Thư viện ảnh
+                img_output = gr.Image(label="📥 Kết Quả (Chạm hoặc giữ ảnh để lưu về iPhone)", type="filepath")
 
             img_btn.click(fn=process_face_swap_image, inputs=[img_target, img_source], outputs=[img_output, img_status])
+
+        with gr.TabItem("🎥 Ghép mặt Video"):
+            with gr.Column():
+                vid_input = gr.Video(label="1. Chọn Video từ Thư viện", sources=["upload"])
+                vid_source_img = gr.Image(label="2. Chọn Ảnh Khuôn Mặt Gốc", type="filepath", sources=["upload"])
+                vid_btn = gr.Button("🚀 Tiến Hành Ghép Video", elem_classes="primary-btn")
+                vid_status = gr.Textbox(label="Trạng thái", interactive=False)
+                vid_output = gr.Video(label="📥 Kết Quả Video & Tải Xuống")
+
+            vid_btn.click(fn=process_face_swap_video, inputs=[vid_input, vid_source_img], outputs=[vid_output, vid_status])
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
